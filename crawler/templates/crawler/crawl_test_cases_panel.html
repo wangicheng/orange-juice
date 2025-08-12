@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Crawl Test Cases Panel</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 500px; margin: auto; padding: 2em; border: 1px solid #ccc; border-radius: 8px; }
+        input, select, textarea { width: 100%; padding: 8px; margin-bottom: 1em; box-sizing: border-box; }
+        button { padding: 10px 15px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #result { margin-top: 1em; padding: 1em; background-color: #f0f0f0; border-radius: 4px; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>爬取測資任務</h2>
+    <form id="crawl-task-form">
+        {% csrf_token %}
+        <label for="oj_problem_id">OJ Problem ID:</label>
+        <select id="oj_problem_id" name="oj_problem_id" required>
+            <option value="" disabled selected>請選擇一個問題</option>
+            {% for problem in problems %}
+                <option value="{{ problem.oj_display_id }}">{{ problem }}</option>
+            {% endfor %}
+        </select>
+
+        <label for="crawler_source_id">爬蟲原始碼:</label>
+        <select id="crawler_source_id" name="crawler_source_id" required>
+            {% for source in crawler_sources %}
+                <option value="{{ source.id }}">{{ source }}</option>
+            {% endfor %}
+        </select>
+
+        <label for="header_code">Header Code:</label>
+        <textarea id="header_code" name="header_code" rows="4"></textarea>
+
+        <label for="footer_code">Footer Code:</label>
+        <textarea id="footer_code" name="footer_code" rows="4"></textarea>
+
+        <button type="submit">啟動任務</button>
+    </form>
+
+    <div id="result"></div>
+</div>
+
+<script>
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    document.getElementById('crawl-task-form').addEventListener('submit', async function(event) {
+        event.preventDefault();
+
+        const ojProblemId = document.getElementById('oj_problem_id').value;
+        const crawlerSourceId = document.getElementById('crawler_source_id').value;
+        const headerCode = document.getElementById('header_code').value;
+        const footerCode = document.getElementById('footer_code').value;
+        const resultDiv = document.getElementById('result');
+        const csrftoken = getCookie('csrftoken');
+
+        resultDiv.innerHTML = '正在發送請求...';
+
+        try {
+            const response = await fetch('/api/tasks/crawl-testcases', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrftoken
+                },
+                body: JSON.stringify({
+                    oj_problem_id: ojProblemId,
+                    crawler_source_id: crawlerSourceId,
+                    header_code: headerCode,
+                    footer_code: footerCode
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                resultDiv.innerHTML = `<p class="success">任務已成功啟動！</p><p>Task ID: ${data.task_id}</p>`;
+            } else {
+                resultDiv.innerHTML = `<p class="error">錯誤：${data.error || response.statusText}</p>`;
+            }
+        } catch (error) {
+            resultDiv.innerHTML = `<p class="error">請求失敗：${error}</p>`;
+        }
+    });
+</script>
+
+</body>
+</html>

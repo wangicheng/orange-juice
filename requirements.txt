@@ -1,0 +1,10 @@
+celery
+django
+djangorestframework
+Pillow
+psycopg2-binary
+python-dotenv
+redis
+requests
+torch
+torchvision

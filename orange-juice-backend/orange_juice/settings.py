@@ -132,6 +132,15 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # --- 在檔案的末尾，加入你自己的設定 ---
 
+# CORS 設定
+# 允許 React 開發伺服器來源
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+# 允許前端在跨域請求中攜帶 cookie (對於 session 認證是必要的)
+CORS_ALLOW_CREDENTIALS = True
+
 # 帳號創建任務相關設定
 MAX_ACCOUNT_CREATION_FAILURES = 50
 DEFAULT_OJ_PASSWORD = os.environ.get('DEFAULT_OJ_PASSWORD')

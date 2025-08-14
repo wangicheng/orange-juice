@@ -9,6 +9,10 @@ ENV PYTHONUNBUFFERED 1
 # 設定工作目錄
 WORKDIR /app
 
+# 複製並設定 wait-for-it.sh 指令稿
+COPY ./wait-for-it.sh /usr/local/bin/wait-for-it.sh
+RUN chmod +x /usr/local/bin/wait-for-it.sh
+
 # 複製依賴套件列表並安裝
 # 這樣做可以利用 Docker 的快取機制，如果 requirements.txt 沒變，就不會重新安裝
 COPY requirements.txt /app/

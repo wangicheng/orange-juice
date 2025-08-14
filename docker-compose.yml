@@ -1,19 +1,7 @@
 version: '3.8'
 
 services:
-  # Django Web 服務
-  web:
-    build: .
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./.env
-    depends_on:
-      - db
-      - redis
+  # --- 資料庫和快取服務 (通常最先定義) ---
 
   # PostgreSQL 資料庫服務
   db:
@@ -21,7 +9,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data/
     env_file:
-      - ./.env
+      - ./orange-juice-backend/.env
     ports:
       - "5432:5432"
 
@@ -29,17 +17,48 @@ services:
   redis:
     image: redis:6-alpine
 
-  # Celery Worker 服務
-  worker:
-    build: .
-    command: celery -A orange_juice worker -l info
+  # --- 應用程式服務 ---
+
+  # Django Web 服務 (這個服務負責建置映像檔)
+  backend:
+    build:
+      context: ./orange-juice-backend
+      dockerfile: Dockerfile
+    # 指定建置後的映像檔名稱，讓 worker 可以引用
+    image: orange-juice-backend-image:latest 
+    command: >
+      sh -c "wait-for-it.sh db:5432 --timeout=30 --strict -- 
+             python manage.py migrate && 
+             python manage.py runserver 0.0.0.0:8000"
     volumes:
-      - .:/app
+      - ./orange-juice-backend:/app
+    ports:
+      - "8000:8000"
     env_file:
-      - ./.env
+      - ./orange-juice-backend/.env
     depends_on:
       - db
       - redis
+
+  # Celery Worker 服務 (這個服務使用 backend 建置好的映像檔)
+  worker:
+    image: orange-juice-backend-image:latest
+    command: >
+      sh -c "wait-for-it.sh db:5432 -t 30 -s -- 
+             wait-for-it.sh redis:6379 -t 30 -s -- 
+             celery -A orange_juice worker -l info"
+    volumes:
+      - ./orange-juice-backend:/app
+    env_file:
+      - ./orange-juice-backend/.env
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+      # 依然需要 backend 來確保映像檔已建置
+      backend:
+        condition: service_started
 
 volumes:
   postgres_data:

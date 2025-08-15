@@ -105,6 +105,10 @@ def crawl_test_cases_task(self, task_id):
     # 用來存放被鎖定的帳號模型，以便最後釋放
     locked_accounts = []
 
+    def check_if_paused():
+        task.refresh_from_db(fields=['status'])
+        return task.status == Task.Status.PAUSED
+
     try:
         task.status = Task.Status.IN_PROGRESS
         task.progress = 5 # 假設準備階段佔 5% 進度
@@ -161,7 +165,7 @@ def crawl_test_cases_task(self, task_id):
         task.save()
         
         submitter = CrawlTestCasesSubmitter(ready_account_pool, task.crawler_source, task.problem, task.header_code, task.footer_code)
-        crawler_core = CrawlerCore(submitter)
+        crawler_core = CrawlerCore(submitter, should_pause=check_if_paused)
 
         # 檢查是否有儲存的狀態，若有則載入
         if task.crawler_state:
@@ -175,6 +179,14 @@ def crawl_test_cases_task(self, task_id):
 
         try:
             crawler_core.run()
+
+            if check_if_paused():
+                logger.info(f"Task {task.id} paused successfully. Saving state.")
+                current_state = crawler_core.save_state()
+                task.crawler_state = asdict(current_state)
+                task.result = {'message': 'Task paused by user.', 'last_state': task.crawler_state}
+                task.save()
+                return
             
             # 任務成功完成
             task.status = Task.Status.SUCCESS
@@ -228,6 +240,13 @@ def execute_create_accounts_task(self, task_id):
         max_failures = target_quantity * 2
         # ... (帳號創建的主迴圈) ...
         while success_count < target_quantity:
+            task.refresh_from_db(fields=['status'])
+            if task.status == Task.Status.PAUSED:
+                logger.info(f"Task {task.id} has been paused by user.")
+                task.result = {'message': f'Task paused by user after creating {success_count} accounts.'}
+                task.save()
+                return
+
             if failure_count > max_failures:
                 logging.error(f"Exceeded maximum failure limit ({max_failures}). Aborting task.")
                 raise Exception(f"Exceeded maximum failure limit ({max_failures}). Aborting task.")

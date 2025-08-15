@@ -43,10 +43,11 @@ class Account(models.Model):
 # 1. Task 是父模型，包含所有共通欄位。它不是抽象的。
 class Task(models.Model):
     class Status(models.TextChoices):
-        PENDING = 'PENDING'
-        IN_PROGRESS = 'IN_PROGRESS'
-        SUCCESS = 'SUCCESS'
-        FAILURE = 'FAILURE'
+        PENDING = 'PENDING', 'Pending'
+        IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+        SUCCESS = 'SUCCESS', 'Success'
+        FAILURE = 'FAILURE', 'Failure'
+        PAUSED = 'PAUSED', 'Paused'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
@@ -66,6 +67,8 @@ class CrawlTestCasesTask(Task):
     crawler_source = models.ForeignKey(CrawlerSource, on_delete=models.PROTECT)
     header_code = models.TextField(blank=True)
     footer_code = models.TextField(blank=True)
+    # 新增此欄位來儲存 CrawlerCore 的狀態
+    crawler_state = models.JSONField(null=True, blank=True, help_text="儲存 CrawlerCore 的執行狀態，以便中斷後恢復")
 
     def __str__(self):
         return f"Crawl Task for {self.problem.oj_display_id}"

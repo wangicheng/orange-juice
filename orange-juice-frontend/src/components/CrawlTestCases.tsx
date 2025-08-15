@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import apiClient from '../api';
 
 // Data interfaces
@@ -23,6 +24,7 @@ interface FormData {
 interface ResultState {
   type: 'success' | 'error';
   message: string;
+  taskId?: string;
 }
 
 function CrawlTestCases() {
@@ -62,11 +64,11 @@ function CrawlTestCases() {
         setLoading(true);
         setResult(null);
         try {
-            const response = await apiClient.post('/api/tasks/crawl-testcases', {
+            const response = await apiClient.post('/api/tasks/crawl-testcases/', {
                 ...formData,
                 crawler_source_id: parseInt(formData.crawler_source_id)
             });
-            setResult({ type: 'success', message: `Task started! Task ID: ${response.data.task_id}` });
+            setResult({ type: 'success', message: `Task started successfully!`, taskId: response.data.task_id });
         } catch (err: any) {
             setResult({ type: 'error', message: `Error: ${err.response?.data?.error || err.message}` });
         } finally {
@@ -108,7 +110,14 @@ function CrawlTestCases() {
             </form>
             {result && (
                 <div className={`mt-6 p-4 rounded-md text-sm ${result.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                    {result.message}
+                    <p>{result.message}</p>
+                    {result.type === 'success' && result.taskId && (
+                        <div className="mt-2">
+                            <Link to={`/tasks/${result.taskId}`} className="font-bold text-green-600 hover:underline">
+                                View Task Status
+                            </Link>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

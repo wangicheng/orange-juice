@@ -6,10 +6,13 @@ from celery import shared_task
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+# 新增 dataclasses.asdict 用於序列化
+from dataclasses import asdict
 from .models import Account, Task, TestCase, Problem, CrawlTestCasesTask, CreateAccountsTask, CrawlerSource
 from .clients.oj_client import OJClient, Result
 from .clients.exceptions import AccountExistsError, CaptchaError, OJClientError, OJServerError
-from .core.crawler_core import CrawlerCore
+# 引入 CrawlerState
+from .core.crawler_core import CrawlerCore, CrawlerState
 from . import utils
 
 logger = logging.getLogger(__name__)
@@ -30,28 +33,51 @@ class CrawlTestCasesSubmitter:
         return f"{self.header_code}\n{code}\n{self.footer_code}"
 
     def _submit_and_get_memory_use(self, code: str):
-        code = self._add_header_and_footer_code(code)
-        acc, client = self.accounts[self._account_idx]
-        self._account_idx = (self._account_idx + 1) % len(self.accounts)
-        response = client.submit_code(code, self.language, self.problem_id)
-        submission_id = response.get('data', {}).get('submission_id')
-        acc.last_used = timezone.now()
-        acc.save(update_fields=['last_used'])
-        while True:
-            time.sleep(0.5)
-            submission = client.get_submission(submission_id)
-            error = submission.get('error', None)
-            if error:
-                data = submission.get('data', None)
-                raise OJServerError(f"Submission failed: {error} {data}")
-            result = submission.get('data', {}).get('result')
-            if result is None:
-                raise OJClientError("Failed to get submission result.")
-            if Result.is_judged(Result(result)):
-                memory_use = submission.get('data', {}).get('statistic_info', {}).get('memory_cost')
-                if memory_use is None:
-                    raise OJClientError("Submission judged, but memory usage is missing.")
-                return memory_use
+        max_retries = 3
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 每次嘗試都使用下一個帳號，以分散風險
+                acc, client = self.accounts[self._account_idx]
+                self._account_idx = (self._account_idx + 1) % len(self.accounts)
+
+                full_code = self._add_header_and_footer_code(code)
+                response = client.submit_code(full_code, self.language, self.problem_id)
+                submission_id = response.get('data', {}).get('submission_id')
+
+                if not submission_id:
+                    raise OJClientError("Failed to get submission_id from response.")
+
+                acc.last_used = timezone.now()
+                acc.save(update_fields=['last_used'])
+
+                while True:
+                    time.sleep(0.5)
+                    submission = client.get_submission(submission_id)
+                    error = submission.get('error', None)
+                    if error:
+                        data = submission.get('data', None)
+                        raise OJServerError(f"Submission failed: {error} {data}")
+                    
+                    result = submission.get('data', {}).get('result')
+                    if result is None:
+                        raise OJClientError("Failed to get submission result.")
+                    
+                    if Result.is_judged(Result(result)):
+                        memory_use = submission.get('data', {}).get('statistic_info', {}).get('memory_cost')
+                        if memory_use is None:
+                            raise OJClientError("Submission judged, but memory usage is missing.")
+                        return memory_use # 成功，返回結果
+            
+            except (OJServerError, OJClientError) as e:
+                logger.warning(f"Submission attempt {attempt + 1}/{max_retries} failed with account {acc.username}: {e}. Retrying...")
+                last_exception = e
+                time.sleep(1) # 重試前稍作等待
+        
+        # 如果所有重試都失敗了
+        logger.error(f"All {max_retries} submission attempts failed.")
+        raise last_exception or OJClientError("All submission attempts failed.")
         
     def found_testcase(self, testcase: str) -> None:
         TestCase.objects.get_or_create(problem=self.problem, content=testcase)
@@ -134,15 +160,40 @@ def crawl_test_cases_task(self, task_id):
         task.progress = 10
         task.save()
         
-        # 在這裡，使用 ready_account_pool 中的帳號和 client 實例進行大量提交
         submitter = CrawlTestCasesSubmitter(ready_account_pool, task.crawler_source, task.problem, task.header_code, task.footer_code)
         crawler_core = CrawlerCore(submitter)
-        crawler_core.run()
-        
-        task.status = Task.Status.SUCCESS
-        task.progress = 100
-        task.save()
-        # ...
+
+        # 檢查是否有儲存的狀態，若有則載入
+        if task.crawler_state:
+            try:
+                state_obj = CrawlerState(**task.crawler_state)
+                crawler_core.load_state(state_obj)
+                logger.info(f"Task {task.id} resumed from state: {state_obj.state}")
+            except TypeError as e:
+                logger.warning(f"Failed to load crawler state for task {task.id}: {e}. Starting from scratch.")
+
+
+        try:
+            crawler_core.run()
+            
+            # 任務成功完成
+            task.status = Task.Status.SUCCESS
+            task.progress = 100
+            task.result = {'message': 'Crawl task completed successfully.'}
+            # 成功後可以清除狀態
+            task.crawler_state = None
+            task.save()
+
+        except Exception as e:
+            # 執行中斷，儲存狀態
+            logger.error(f"Crawler task {task.id} failed, saving state.", exc_info=True)
+            current_state = crawler_core.save_state()
+            task.crawler_state = asdict(current_state)
+            task.status = Task.Status.FAILURE
+            task.result = {'error': str(e), 'last_state': task.crawler_state}
+            task.save()
+            # 重新拋出異常，讓 Celery 知道任務失敗
+            raise
 
     except Exception as e:
         task.status = Task.Status.FAILURE

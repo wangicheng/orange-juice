@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import apiClient from '../api';
 
 interface ResultState {
-  type: 'success' | 'error';
-  message: string;
+    type: 'success' | 'error';
+    message: string;
+    taskId?: string;
 }
 
 function CreateAccounts() {
@@ -16,8 +18,8 @@ function CreateAccounts() {
         setLoading(true);
         setResult(null);
         try {
-            const response = await apiClient.post('/api/tasks/create-accounts', { quantity });
-            setResult({ type: 'success', message: `Task started! Task ID: ${response.data.task_id}` });
+            const response = await apiClient.post('/api/tasks/create-accounts/', { quantity });
+            setResult({ type: 'success', message: `Task started successfully!`, taskId: response.data.task_id });
         } catch (err: any) {
             setResult({ type: 'error', message: `Error: ${err.response?.data?.error || err.message}` });
         } finally {
@@ -49,7 +51,14 @@ function CreateAccounts() {
             </form>
             {result && (
                 <div className={`mt-6 p-4 rounded-md text-sm ${result.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                    {result.message}
+                    <p>{result.message}</p>
+                    {result.type === 'success' && result.taskId && (
+                        <div className="mt-2">
+                            <Link to={`/tasks/${result.taskId}`} className="font-bold text-blue-600 hover:underline">
+                                View Task Status
+                            </Link>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

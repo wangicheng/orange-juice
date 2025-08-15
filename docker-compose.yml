@@ -12,10 +12,21 @@ services:
       - ./orange-juice-backend/.env
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 
   # Redis 服務 (Celery Broker)
   redis:
     image: redis:6-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # --- 應用程式服務 ---
 
@@ -24,8 +35,6 @@ services:
     build:
       context: ./orange-juice-backend
       dockerfile: Dockerfile
-    # 指定建置後的映像檔名稱，讓 worker 可以引用
-    image: orange-juice-backend-image:latest 
     command: >
       sh -c "wait-for-it.sh db:5432 --timeout=30 --strict -- 
              python manage.py migrate && 
@@ -37,12 +46,15 @@ services:
     env_file:
       - ./orange-juice-backend/.env
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   # Celery Worker 服務 (這個服務使用 backend 建置好的映像檔)
   worker:
-    image: orange-juice-backend-image:latest
+    build:
+      context: ./orange-juice-backend
     command: >
       sh -c "wait-for-it.sh db:5432 -t 30 -s -- 
              wait-for-it.sh redis:6379 -t 30 -s -- 
@@ -53,10 +65,9 @@ services:
       - ./orange-juice-backend/.env
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
-      # 依然需要 backend 來確保映像檔已建置
+        condition: service_healthy
       backend:
         condition: service_started
 

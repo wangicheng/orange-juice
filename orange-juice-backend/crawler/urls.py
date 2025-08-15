@@ -1,10 +1,7 @@
 from django.urls import path
-from .views import CreateAccountsControlPanelView, CrawlTestCasesControlPanelView
-
+from .views import PauseTaskView, ResumeCrawlTaskView
 
 urlpatterns = [
-    # GET /panel/tasks/create-accounts
-    path('panel/tasks/create-accounts/', CreateAccountsControlPanelView.as_view(), name='panel-create-accounts'),
-    # GET /panel/tasks/crawl-testcases
-    path('panel/tasks/crawl-testcases/', CrawlTestCasesControlPanelView.as_view(), name='panel-crawl-testcases'),
+    path('api/tasks/<uuid:task_id>/pause/', PauseTaskView.as_view(), name='task-pause'),
+    path('api/tasks/<uuid:task_id>/resume/', ResumeCrawlTaskView.as_view(), name='resume-crawl-task'),
 ]

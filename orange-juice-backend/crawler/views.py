@@ -1,23 +1,18 @@
-from django.views.generic import TemplateView
+from django.http import JsonResponse
+from django.views.generic import View
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.utils.decorators import method_decorator
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
-from .models import Problem, Task, CrawlerSource, CrawlTestCasesTask, CreateAccountsTask
+from rest_framework import status, generics
+from .models import Problem, Task, CrawlerSource, CrawlTestCasesTask, CreateAccountsTask, TestCase
 from .tasks import crawl_test_cases_task, execute_create_accounts_task
+from .serializers import ProblemSerializer, CrawlerSourceSerializer, TestCaseSerializer
 
-# 新增這個 View 來顯示我們的控制面板頁面
-class CreateAccountsControlPanelView(TemplateView):
-    template_name = "crawler/create_accounts_panel.html"
-
-# 新增爬取測資任務的控制面板 View
-class CrawlTestCasesControlPanelView(TemplateView):
-    template_name = "crawler/crawl_test_cases_panel.html"
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context['crawler_sources'] = CrawlerSource.objects.all()
-        context['problems'] = Problem.objects.all()
-        return context
+@method_decorator(ensure_csrf_cookie, name='dispatch')
+class GetCSRFToken(View):
+    def get(self, request, *args, **kwargs):
+        return JsonResponse({'success': 'CSRF cookie set'})
 
 class CrawlTestCasesTaskView(APIView):
     def post(self, request, *args, **kwargs):
@@ -81,7 +76,7 @@ class TaskStatusView(APIView):
     def get(self, request, task_id, *args, **kwargs):
         try:
             task = Task.objects.get(id=task_id)
-            # 這裡可以加上序列化器 (Serializer) 來回傳更完整的資訊
+            
             response_data = {
                 "id": task.id,
                 "status": task.status,
@@ -89,6 +84,20 @@ class TaskStatusView(APIView):
                 "result": task.result,
                 "updated_at": task.updated_at
             }
+
+            # 嘗試獲取具體的任務子類，以便訪問其專有欄位
+            try:
+                crawl_task = task.crawltestcasestask
+                response_data['task_type'] = 'CrawlTestCasesTask'
+                response_data['crawler_state'] = crawl_task.crawler_state
+            except CrawlTestCasesTask.DoesNotExist:
+                try:
+                    # 如果需要，也可以處理其他任務類型
+                    task.createaccountstask
+                    response_data['task_type'] = 'CreateAccountsTask'
+                except CreateAccountsTask.DoesNotExist:
+                    response_data['task_type'] = 'Task'
+
             return Response(response_data, status=status.HTTP_200_OK)
         except Task.DoesNotExist:
             return Response(
@@ -96,14 +105,44 @@ class TaskStatusView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+class ResumeCrawlTaskView(APIView):
+    def post(self, request, task_id, *args, **kwargs):
+        try:
+            task = CrawlTestCasesTask.objects.get(id=task_id)
+        except CrawlTestCasesTask.DoesNotExist:
+            return Response({"error": "Crawl task not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 只允許從 FAILURE 狀態恢復
+        if task.status != Task.Status.FAILURE:
+            return Response(
+                {"error": f"Task is in '{task.status}' state and cannot be resumed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 如果請求中有提供新的 state，就更新它
+        new_state = request.data.get('crawler_state')
+        if new_state is not None:
+            task.crawler_state = new_state
+        
+        # 重設任務狀態以便重新執行
+        task.status = Task.Status.PENDING
+        task.progress = 0
+        task.result = {"message": "Task has been resumed by user."}
+        task.save()
+
+        # 重新將任務推送到 Celery
+        crawl_test_cases_task.delay(task.id)
+
+        return Response(
+            {"message": "Task has been successfully queued for resumption.", "task_id": task.id},
+            status=status.HTTP_200_OK
+        )
+
 class CreateAccountsTaskView(APIView):
     """
     接收創建帳號的請求，並啟動一個非同步任務來執行。
     """
     def post(self, request, *args, **kwargs):
-        """
-        處理 POST /api/accounts/create 請求。
-        """
         # 1. 從請求中獲取數量
         try:
             quantity = int(request.data.get('quantity'))
@@ -131,3 +170,80 @@ class CreateAccountsTaskView(APIView):
             {"task_id": new_task.id},
             status=status.HTTP_202_ACCEPTED
         )
+
+class PauseTaskView(APIView):
+    def post(self, request, task_id, *args, **kwargs):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({"error": "Task not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if task.status not in [Task.Status.PENDING, Task.Status.IN_PROGRESS]:
+            return Response(
+                {"error": f"Task is in '{task.status}' state and cannot be paused."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        task.status = Task.Status.PAUSED
+        task.result = {"message": "Task pause request received."}
+        task.save()
+
+        return Response(
+            {"message": "Task has been marked for pausing.", "task_id": task.id},
+            status=status.HTTP_200_OK
+        )
+
+class ResumeCrawlTaskView(APIView):
+    def post(self, request, task_id, *args, **kwargs):
+        try:
+            task = CrawlTestCasesTask.objects.get(id=task_id)
+        except CrawlTestCasesTask.DoesNotExist:
+            return Response({"error": "Crawl task not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 只允許從 FAILURE 或 PAUSED 狀態恢復
+        if task.status not in [Task.Status.FAILURE, Task.Status.PAUSED]:
+            return Response(
+                {"error": f"Task is in '{task.status}' state and cannot be resumed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 如果請求中有提供新的 state，就更新它
+        new_state = request.data.get('crawler_state')
+        if new_state is not None:
+            task.crawler_state = new_state
+        
+        # 重設任務狀態以便重新執行
+        task.status = Task.Status.PENDING
+        task.progress = 0
+        task.result = {"message": "Task has been resumed by user."}
+        task.save()
+
+        # 重新將任務推送到 Celery
+        crawl_test_cases_task.delay(task.id)
+
+        return Response(
+            {"message": "Task has been successfully queued for resumption.", "task_id": task.id},
+            status=status.HTTP_200_OK
+        )
+
+# Add these new API List Views
+class ProblemListView(generics.ListAPIView):
+    queryset = Problem.objects.all().order_by('oj_display_id')
+    serializer_class = ProblemSerializer
+
+class CrawlerSourceListView(generics.ListAPIView):
+    queryset = CrawlerSource.objects.all().order_by('name')
+    serializer_class = CrawlerSourceSerializer
+
+class ProblemDetailView(generics.RetrieveAPIView):
+    queryset = Problem.objects.all()
+    serializer_class = ProblemSerializer
+    lookup_field = 'oj_display_id'
+    lookup_url_kwarg = 'problem_id'
+
+class TestCaseListView(generics.ListAPIView):
+    serializer_class = TestCaseSerializer
+
+    def get_queryset(self):
+        problem_id = self.kwargs['problem_id']
+        return TestCase.objects.filter(problem__oj_display_id=problem_id).order_by('created_at')
